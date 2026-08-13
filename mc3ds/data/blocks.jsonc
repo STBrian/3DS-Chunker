@@ -296,7 +296,8 @@
     "40:0": "minecraft:red_mushroom",
     "41:0": "minecraft:gold_block",
     "42:0": "minecraft:iron_block",
-    "43:0": "minecraft:stone_slab[type=double]",
+
+    "43:0": "minecraft:smooth_stone_slab[type=double]",
     "43:1": "minecraft:sandstone_slab[type=double]",
     "43:2": "minecraft:petrified_oak_slab[type=double]",
     "43:3": "minecraft:cobblestone_slab[type=double]",
@@ -312,7 +313,8 @@
     "43:13": "minecraft:stone_brick_slab[type=double]",
     "43:14": "minecraft:nether_brick_slab[type=double]",
     "43:15": "minecraft:smooth_quartz",
-    "44:0": "minecraft:stone_slab[type=bottom]",
+
+    "44:0": "minecraft:smooth_stone_slab[type=bottom]",
     "44:1": "minecraft:sandstone_slab[type=bottom]",
     "44:2": "minecraft:petrified_oak_slab[type=bottom]",
     "44:3": "minecraft:cobblestone_slab[type=bottom]",
@@ -320,7 +322,7 @@
     "44:5": "minecraft:stone_brick_slab[type=bottom]",
     "44:6": "minecraft:quartz_slab[type=bottom]",
     "44:7": "minecraft:nether_brick_slab[type=bottom]",
-    "44:8": "minecraft:stone_slab[type=top]",
+    "44:8": "minecraft:smooth_stone_slab[type=top]",
     "44:9": "minecraft:sandstone_slab[type=top]",
     "44:10": "minecraft:petrified_oak_slab[type=top]",
     "44:11": "minecraft:cobblestone_slab[type=top]",
@@ -1116,6 +1118,12 @@
     "158:3": "minecraft:jungle_slab[type=bottom]",
     "158:4": "minecraft:acacia_slab[type=bottom]",
     "158:5": "minecraft:dark_oak_slab[type=bottom]",
+    "158:8": "minecraft:oak_slab[type=top]",
+    "158:9": "minecraft:spruce_slab[type=top]",
+    "158:10": "minecraft:birch_slab[type=top]",
+    "158:11": "minecraft:jungle_slab[type=top]",
+    "158:12": "minecraft:acacia_slab[type=top]",
+    "158:13": "minecraft:dark_oak_slab[type=top]",
 
     // "158:2": "minecraft:dropper[triggered=false,facing=north]",
     // "158:3": "minecraft:dropper[triggered=false,facing=south]",
@@ -1485,7 +1493,7 @@
     "207:1": "minecraft:beetroots[age=1]",
     "207:2": "minecraft:beetroots[age=2]",
     "207:3": "minecraft:beetroots[age=3]",
-    
+
     "209:0": "minecraft:end_gateway",
     "210:0": "minecraft:repeating_command_block[conditional=false,facing=down]",
     "210:1": "minecraft:repeating_command_block[conditional=false,facing=up]",
