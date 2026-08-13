@@ -1,23 +1,20 @@
 import sys
 import shutil
 from pathlib import Path
-import random
 import re
 import json5
-import asyncio
 import logging
-from multiprocessing import Lock
-from concurrent.futures import ThreadPoolExecutor
-from collections import defaultdict
+import copy
+
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 from anvil import EmptyRegion, Block
 import nbtlib
 from nbtlib.tag import String
 from tqdm import tqdm
-from p_tqdm import p_umap, p_uimap
 
-from .classes import World, Entry
+from .classes import World, Entry, Chunk, Subfile
 from .EmptyChunk import EmptyChunk
 
 OVERWORLD = 0
@@ -28,6 +25,26 @@ AIR = (0, 0)
 
 logger = logging.getLogger(__name__)
 
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+
+def notify_log(msg):
+    logger.info(msg)
+    tqdm.write(f"{msg}")
+
+def notify_err(msg):
+    logger.error(msg)
+    tqdm.write(f"{RED}{msg}{RESET}")
+
+def notify_warn(msg):
+    logger.warning(msg)
+    tqdm.write(f"{YELLOW}{msg}{RESET}")
+
+def notify_ok(msg):
+    logger.info(msg)
+    tqdm.write(f"{GREEN}{msg}{RESET}")
 
 class ChunkConverter:
     def __init__(
@@ -37,50 +54,91 @@ class ChunkConverter:
         self.entry = entry
         self.blocks = blocks
         self.chunk = EmptyChunk(self.chunk_x, self.chunk_z)
+        self.ignore_unknown_block_data = False
+        self.silent_warnings = False
 
     def place_blocks(self) -> None:
         setted = set()
-        for subchunk_y, subchunk in enumerate(self.entry.data_chunk.data.subchunks):
-            y_offset = subchunk_y * 16
-            for x, row in enumerate(subchunk.blocks):
+        if self.entry.chunk.unknown1 == 3:
+            for subchunk_y, subchunk in enumerate(self.entry.data_chunk.data.subchunks):
+                y_offset = subchunk_y * 16
+                for x, row in enumerate(subchunk.blocks):
+                    for z, column in enumerate(row):
+                        for y, block in enumerate(column):
+                            unknown_block_data = subchunk.unknownBlockData[x][z][y]
+                            calculated_y = y + y_offset
+                            pos = x, calculated_y, z
+                            setted.add(pos)
+                            position = x * 16 * 16 + z * 16 + y
+                            # extract the nibble from the byte
+                            block_byte = subchunk.blockData[position // 2]
+                            if position % 2 == 0:
+                                block_data = block_byte & 0xF
+                            else:
+                                block_data = block_byte >> 4
+
+                            block_id = (block, block_data)
+                            if unknown_block_data and not self.ignore_unknown_block_data:
+                                raise NotImplementedError(
+                                    f"Unknown block data 0x{unknown_block_data:02X}"
+                                    f" at {(self.chunk_x * 16 + x, calculated_y, self.chunk_z * 16 + z)}"
+                                )
+                                if block_id == AIR:
+                                    block = Block("minecraft", "glass")
+                                    self.chunk.set_block(block, x, calculated_y, z)
+                                    continue
+                            if block_id != AIR:
+                                try:
+                                    block = self.blocks[block_id]
+                                except KeyError:
+                                    logger.warning(
+                                        f"unknown block {block_id} at {(self.chunk_x * 16 + x, calculated_y, self.chunk_z * 16 + z)} dimension {self.dimension}"
+                                    )
+                                    # sys.stderr.flush()
+                                    # try:
+                                    #     block = self.blocks[(block, 0)]
+                                    # except:
+                                    block = Block("minecraft", "netherite_block")
+                                self.chunk.set_block(block, x, calculated_y, z)
+        elif self.entry.chunk.unknown1 == 2:
+            for x, row in enumerate(self.entry.data_chunk.data.blocks):
                 for z, column in enumerate(row):
                     for y, block in enumerate(column):
-                        unknown_block_data = subchunk.unknownBlockData[x][z][y]
-                        calculated_y = y + y_offset
-                        pos = x, calculated_y, z
+                        pos = x, y, z
                         setted.add(pos)
-                        position = x * 16 * 16 + z * 16 + y
-                        # extract the nibble from the byte
-                        block_byte = subchunk.blockData[position // 2]
+                        position = (x * 2048) + (z * 128) + y
+                        block_byte = self.entry.data_chunk.data.blockData[position // 2]
                         if position % 2 == 0:
                             block_data = block_byte & 0xF
                         else:
                             block_data = block_byte >> 4
 
                         block_id = (block, block_data)
-                        if unknown_block_data:
-                            raise ValueError(
-                                f"UNKNOWN UNKNOWN UNKNOWN 0x{unknown_block_data:02X}"
-                            )
-                            if block_id == AIR:
-                                block = Block("minecraft", "glass")
-                                self.chunk.set_block(block, x, calculated_y, z)
-                                continue
                         if block_id != AIR:
                             try:
                                 block = self.blocks[block_id]
                             except KeyError:
+                                # if not self.silent_warnings:
                                 logger.warning(
-                                    f"unknown block {block_id} at {(self.chunk_x * 16 + x, calculated_y, self.chunk_z * 16 + z)} dimension {self.dimension}"
+                                    f"unknown block {block_id} at {(self.chunk_x * 16 + x, y, self.chunk_z * 16 + z)} dimension {self.dimension}"
                                 )
-                                sys.stderr.flush()
+                                # sys.stderr.flush()
                                 block = Block("minecraft", "netherite_block")
-                            self.chunk.set_block(block, x, calculated_y, z)
+                            self.chunk.set_block(block, x, y, z)
+        else:
+            raise NotImplementedError(f"Chunk format {self.entry.chunk.unknown1} not implemented")
 
     def place_biomes(self) -> None:
-        for section_z, biome_z in enumerate(self.entry.data_chunk.data.biomes):
-            for section_x, biome_v in enumerate(biome_z):
-                self.chunk.paint_biome_column(section_x, section_z, biome_v)
+        if self.entry.chunk.unknown1 == 3:
+            for section_z, biome_z in enumerate(self.entry.data_chunk.data.biomes):
+                for section_x, biome_v in enumerate(biome_z):
+                    self.chunk.paint_biome_column(section_x, section_z, biome_v)
+        elif self.entry.chunk.unknown1 == 2:
+            for section_z, biome_z in enumerate(self.entry.data_chunk.data.biomes):
+                for section_x, biome_v in enumerate(biome_z):
+                    self.chunk.paint_biome_column(section_x, section_z, int(biome_v & 0xFF))
+        else:
+            raise NotImplementedError(f"Chunk format {self.entry.chunk.unknown1} not implemented")
 
     @property
     def region_position(self) -> tuple[int, int, int]:
@@ -140,15 +198,88 @@ def parse_block_json(raw_blocks: dict) -> dict:
 
     return blocks
 
+def save_region(region_converter: RegionConverter) -> None:
+    region_converter.save()
 
+def deconstruct_chunk_converter(chunk_converter: ChunkConverter) -> tuple:
+    return (
+        (chunk_converter.chunk_x, chunk_converter.chunk_z, chunk_converter.dimension),
+        chunk_converter.entry.chunk._subfile._stream.name,
+        chunk_converter.entry.chunk._subfile._offset,
+        int(chunk_converter.entry.chunk._subfile._size),
+        chunk_converter.blocks,
+        chunk_converter.entry.chunk._raw,
+        chunk_converter.ignore_unknown_block_data,
+        chunk_converter.silent_warnings,
+        # str(Path.cwd())
+    )
+
+def process_chunk(chunk_converter: ChunkConverter) -> ChunkConverter:
+    # dump_to_file(chunk_converter, "test_bad.txt")
+    chunk_converter.place_blocks()
+    chunk_converter.place_biomes()
+    return chunk_converter.chunk
+
+def process_chunk2(data: tuple):
+    from io import BytesIO
+    from mc3ds.parser import parser
+
+    # debugPath = Path(data[8]) / "debug"
+    # if not debugPath.exists() or not debugPath.is_dir():
+    #     debugPath.mkdir()
+
+    # reconstruct ChunkConverter
+    file = open(data[1], "rb")
+    filedata = BytesIO(file.read())
+    filedata.seek(data[2])
+    file.close()
+    subfile = Subfile(filedata, data[3])
+    chunk = Chunk(subfile)
+    # this is a workaround cause I'm not sure why subfile is not working
+    chunk._raw = data[5]
+    chunk._header = parser.ChunkHeader(chunk._raw)
+
+    # Always 0? No
+    if chunk.unknown0 != 0 or chunk.unknown_parameter_1 != 0:
+        notify_log(f"Chunk info: param0={chunk.unknown_parameter_0}, param1={chunk.unknown_parameter_1}, unk0={chunk.unknown0}, unk1={chunk.unknown1}, unk2={chunk.unknown2}")
+    # assert chunk.unknown1 == 3 # Seems to be the value that all correct chunks have
+    # if chunk.unknown1 != 3 and chunk.unknown1 != 2:
+    #     try:
+    #         count = 0
+    #         for subchunk in chunk[0].data.subchunks:
+    #             if subchunk.constant0 != 0:
+    #                 with open(debugPath / f"debug_chunk.{chunk.position[0]}_{chunk.position[1]}_{chunk.position[2]}_{count}.txt", mode="w") as f:
+    #                     print(f"Format: {subchunk.constant0}", file=f)
+    #                     print("Blocks", file=f)
+    #                     print(subchunk.blocks, file=f)
+    #                     print("Blocks data", file=f)
+    #                     print(subchunk.blockData, file=f)
+    #                     print("Blocks data 2", file=f)
+    #                     print(subchunk.unknownBlockData, file=f)
+    #             count += 1
+    #     except Exception as e:
+    #         print(f"Error! {e}")
+
+    entry = Entry(None, chunk)
+    chunk_converter = ChunkConverter(data[0], entry, data[4])
+    chunk_converter.ignore_unknown_block_data = data[6]
+    chunk_converter.silent_warnings = data[7]
+    process_chunk(chunk_converter)
+    return chunk_converter.chunk
+
+# @profile
 def convert(
     world: World,
     blank_world: Path,
-    world_out: Path,
+    world_out_str: str,
     delete_out: bool = False,
     interactive: bool = True,
     world_void = False,
+    developer: bool = False,
 ) -> None:
+    if world_out_str == "":
+        world_out_str = Path.cwd() / re.sub(r'[^\w_. -]', '_', world.name)
+    world_out = Path(world_out_str)
     if world_out.exists():
         if not world_out.is_dir() or not (world_out / "level.dat").is_file():
             raise FileExistsError(
@@ -178,7 +309,8 @@ def convert(
         level["Data"]["LevelName"] = String(world.name)
         # Set world spawn point
         level["Data"]["SpawnX"] = nbtlib.tag.Int(world.metadata.value["SpawnX"])
-        level["Data"]["SpawnY"] = nbtlib.tag.Int(world.metadata.value["SpawnY"]) # the 3ds value is weird
+        # TODO: fix SpawnY
+        # level["Data"]["SpawnY"] = nbtlib.tag.Int(world.metadata.value["SpawnY"]) # the 3ds value is weird
         level["Data"]["SpawnZ"] = nbtlib.tag.Int(world.metadata.value["SpawnZ"])
         #level["Data"]["GameRules"] = nbtlib.tag.Compound()
         #level["Data"]["GameRules"]["doMobSpawning"] = nbtlib.tag.String("true")
@@ -208,7 +340,6 @@ def convert(
         if "ScheduledEvents" in level["Data"]:
             del level["Data"]["ScheduledEvents"]
         #print(level["Data"])
-    #sys.exit(0)
 
     # read the JSON files containing MCPE block IDs
     with open(Path(__file__).parent / "data" / "blocks.jsonc") as blocks_file:
@@ -218,43 +349,15 @@ def convert(
     chunk_converters: list[ChunkConverter] = []
 
     for position, entry in world.entries.items():
-        chunk_converters.append(ChunkConverter(position, entry, blocks))
+        # Create a deep copy of the entry to avoid memory leak. 
+        # That's because the entry is stored in world.entries with all the processing data that wont
+        # be used after converting. And because the entry is still referenced, it wont be garbage collected.
+        chunk_converters.append(ChunkConverter(position, copy.deepcopy(entry), blocks))
+        if developer:
+            chunk_converters[-1].ignore_unknown_block_data = True
+            chunk_converters[-1].silent_warnings = True
 
-    def convert_chunk(
-        chunk_converter: ChunkConverter,
-    ) -> tuple[tuple[int, int, int], EmptyChunk]:
-        chunk_converter.place_blocks()
-        return chunk_converter.region_position, chunk_converter.chunk
-
-    regions = {}
-
-    def process_region(
-        region_position: tuple[int, int, int], chunk_converters: list[EmptyChunk]
-    ):
-        assert region_position not in regions
-        regions[region_position] = region_converter = RegionConverter(
-            world_out, region_position
-        )
-        for chunk in chunk_converters:
-            region_converter.add_chunk(chunk)
-
-    def save_region(region_converter: RegionConverter) -> None:
-        region_converter.save()
-
-    chunk_regions = defaultdict(list)
     region_converters: dict[Any, RegionConverter] = {}
-
-    class DummyPoolExecutorContext:
-        def map(self, func, iter):
-            for thing in iter:
-                yield func(thing)
-
-    class DummyPoolExecutor:
-        def __enter__(self):
-            return DummyPoolExecutorContext()
-
-        def __exit__(self, exc_type, exc_value, traceback):
-            return False
         
     # get all regions
     for chunk_converter in chunk_converters:
@@ -265,50 +368,122 @@ def convert(
         else:
             region_converters[current_region_position].chunk_count += 1
 
+    region_executor = ProcessPoolExecutor(max_workers=6)
+    useThreadPool = False
+    PoolExecutor = ProcessPoolExecutor
+    if useThreadPool:
+        PoolExecutor = ThreadPoolExecutor
+
     # process chunks for each region, save it and discard after to save memory
     total_regions = len(region_converters.keys())
-    for ri, key in enumerate(list(region_converters.keys())):
-        count = 0
-        pbar = tqdm(total=region_converters[key].chunk_count, desc=f"Converting region {ri+1}/{total_regions} chunks")
-        for chunk_converter in chunk_converters[:]:
-            current_region_position = chunk_converter.region_position
-            if key == current_region_position:
-                count += 1
-                chunk_converter.place_blocks()
-                chunk_converter.place_biomes()
-                region_converters[key].add_chunk(chunk_converter.chunk)
-                chunk_converters.remove(chunk_converter)
+    ri = 0
+    region_converters_keys = list(region_converters.keys())
+    with PoolExecutor(max_workers=8) as chunk_executor:
+        for key in region_converters_keys:
+            future_metadata = {}
+            region_conv = region_converters[key]
+            pbar = tqdm(total=region_conv.chunk_count, desc=f"Converting region {ri+1}/{total_regions} chunks")
+            count_ok = 0
+            count_bad = 0
+
+            pending = set()
+
+            for i in range(len(chunk_converters) - 1, -1, -1):
+                chunk_converter = chunk_converters[i]
+
+                if key != chunk_converter.region_position:
+                    continue
+
+                if not useThreadPool:
+                    future = chunk_executor.submit(
+                        process_chunk2,
+                        deconstruct_chunk_converter(chunk_converter)
+                    )
+                else:
+                    future = chunk_executor.submit(
+                        process_chunk,
+                        chunk_converter
+                    )
+
+                pending.add((future, i))
+                future_metadata[future] = {
+                    "position": (chunk_converter.chunk_x, chunk_converter.chunk_z, chunk_converter.dimension)
+                }
+
+                # No mandar demasiados chunks simultáneamente
+                if len(pending) >= 16:
+                    done, _ = wait(
+                        [f for f, _ in pending],
+                        return_when=FIRST_COMPLETED
+                    )
+
+                    for future in done:
+                        try:
+                            chunk = future.result()
+                            region_conv.add_chunk(chunk)
+                            count_ok += 1
+                        except Exception as e:
+                            md = future_metadata.pop(future)
+                            pos = md["position"]
+                            if not developer:
+                                notify_err(f"Failed to convert chunk at: x={pos[0]}, z={pos[1]}, dimension={pos[2]}")
+                            else:
+                                notify_err(f"Failed to convert chunk at: x={pos[0]}, z={pos[1]}, dimension={pos[2]} -> {e}")
+                            count_bad += 1
+
+                        pbar.update()
+                        if useThreadPool:
+                            for tmp_chunk_conv in chunk_converters:
+                                if tmp_chunk_conv.chunk == chunk:
+                                    chunk_converters.remove(tmp_chunk_conv)
+
+                        pending = {
+                            (f, i)
+                            for f, i in pending
+                            if f not in done
+                        }
+
+            # Esperar los chunks restantes
+            for future, i in pending:
+                try:
+                    chunk = future.result()
+                    region_conv.add_chunk(chunk)
+                    count_ok += 1
+                except:
+                    md = future_metadata.pop(future)
+                    pos = md["position"]
+                    if not developer:
+                        notify_err(f"Failed to convert chunk at: x={pos[0]}, z={pos[1]}, dimension={pos[2]}")
+                    else:
+                        notify_err(f"Failed to convert chunk at: x={pos[0]}, z={pos[1]}, dimension={pos[2]} -> {e}")
+                    count_bad += 1
+
                 pbar.update()
-        save_region(region_converters[key])
-        del region_converters[key]
+                if useThreadPool:
+                    for tmp_chunk_conv in chunk_converters:
+                        if tmp_chunk_conv.chunk == chunk:
+                            chunk_converters.remove(tmp_chunk_conv)
 
-    # disable threads
-    """
-    ThreadPoolExecutor = DummyPoolExecutor
-    with ThreadPoolExecutor() as executor:
-        for current_region_position, chunk in tqdm(
-            executor.map(convert_chunk, chunk_converters),
-            total=len(chunk_converters),
-            desc="Converting chunks",
-            unit="chunk",
-        ):
-            region_converter = region_converters[current_region_position]
-            region_converter.add_chunk(chunk)
-            # chunk_converters = chunk_regions[current_region_position]
-            # chunk_converters.append(chunk)
-        # tuple(
-        #     tqdm(
-        #         executor.map(
-        #             lambda keyvalue: process_region(*keyvalue), chunk_regions.items()
-        #         ),
-        #         total=len(chunk_regions),
-        #         desc="Adding chunks to regions",
-        #         unit="region",
-        #     )
-        # )
+            notify_ok(f"Processed chunks for region {ri+1}/{total_regions}")
+            if count_bad > 0:
+                notify_warn(f"Success: {count_ok}     Fail: {count_bad}")
+            else:
+                notify_ok(f"Success: {count_ok}     Fail: {count_bad}")
+            # notify_ok(f"Saving region {ri+1}/{total_regions}")
+            future = region_executor.submit(save_region, region_converters[key])
+            # future_region_md[future]
+    
+            def done_callback(future, ri, key, region_x, region_z, dimension):
+                try:
+                    future.result()
+                    notify_ok(f"Saved region {region_x}, {region_z} dimension {dimension}")
+                except Exception as e:
+                    notify_err(f"Error saving region {ri+1}/{total_regions}: {e}")
+                del region_converters[key]
 
-        for region_converter in tqdm(
-            region_converters.values(), desc="Saving regions", unit="region"
-        ):
-            save_region(region_converter)
-    """
+            
+            future.add_done_callback(lambda f, ri=ri, key=key, x=region_conv.region_x, z=region_conv.region_z, dim=region_conv.dimension: done_callback(f, ri, key, x, z, dim))
+            pbar.close()
+            ri += 1
+
+    region_executor.shutdown(wait=True)

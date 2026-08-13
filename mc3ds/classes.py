@@ -57,6 +57,17 @@ class BaseParser:
     def _seek(self, position: int) -> None:
         self._stream.seek(self._offset + position)
 
+    def __deepcopy__(self, memo) -> "BaseParser":
+        # create a new instance of the same class
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+
+        # copy the attributes
+        for attr, value in vars(self).items():
+            setattr(cls, attr, value)
+        return result
+
 
 class Index(BaseParser):
     def _reload_data(self) -> None:
@@ -78,6 +89,18 @@ class Subfile(BaseParser):
     def __init__(self, stream: BytesIO, subfile_size: int) -> None:
         self._size = subfile_size
         super().__init__(stream)
+
+    def __deepcopy__(self, memo) -> "BaseParser":
+        # create a new instance of the same class
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+
+        # copy the attributes
+        cls._stream = self._stream
+        cls._offset = self._offset
+        cls._size = self._size
+        return result
 
     # it's a property so it's read only
     @property
@@ -209,13 +232,30 @@ class Subchunk:
                     Warning, stacklevel=0)
             assert data.subchunkCount <= 8
             for subchunk in data.subchunks:
-                assert subchunk.constant0 == 0x0
+                if subchunk.constant0 != 0x0:
+                    pass
+                    # raise NotImplementedError("subchunk constant0 is 0x{subchunk.constant0:x}, expected 0x0")
         return self.__data_cache
 
-    @property
-    def size(self) -> int:
-        return self._data_header.subchunks
+    # @property
+    # def size(self) -> int:
+    #     return self._data_header.subchunks
 
+class LegacyChunkData(Subchunk):
+    def __init__(self, header, compressed):
+        super().__init__(header, compressed)
+        self.__data_cache = None
+
+    @property
+    def data(self):
+        if self.__data_cache is None:
+            self.__data_cache = data = parser.LegacyChunkData(self.raw_decompressed)
+            if len(data) != len(self.raw_decompressed):
+                warnings.warn(
+                    f"length data {len(data):d} "
+                    f"is not expected size {len(self.raw_decompressed):d}",
+                    Warning, stacklevel=0)
+        return self.__data_cache
 
 class IterChunk:
     def __init__(self, chunk) -> None:
@@ -266,6 +306,10 @@ class Chunk:
         return self._header.unknown1
 
     @property
+    def unknown2(self) -> int:
+        return self._header.unknown2
+
+    @property
     def filler(self) -> bool:
         return self._subfile.filler
 
@@ -286,10 +330,10 @@ class Chunk:
 
         skipped = 0
         start = self._header.size
-        decompress_object = zlib.decompressobj()
+        # decompress_object = zlib.decompressobj()
         for section in self._header.sections:
             if section.index == key:
-                size = section.compressedSize
+                # size = section.compressedSize
                 break
             elif section.index != -1:
                 # skip past the decompressed data
@@ -302,8 +346,14 @@ class Chunk:
         should_be = start + len(parser.SubfileHeader)
         if subchunk_header.position != should_be:
             raise ValueError("invalid position")
-        subchunk = Subchunk(subchunk_header, self._raw[start:])
-        return subchunk
+        if self.unknown1 == 3:
+            subchunk = Subchunk(subchunk_header, self._raw[start:])
+            return subchunk
+        elif self.unknown1 == 2:
+            raw_chunk = LegacyChunkData(subchunk_header, self._raw[start:])
+            return raw_chunk
+        else:
+            raise NotImplementedError(f"Chunk type {self.unknown1} is not implemented")
 
 
 class VDBData:
@@ -457,6 +507,8 @@ class Entry:
 
         try:
             subchunk = data.subchunks[subchunk_index]
+            if subchunk.constant0 != 0x0:
+                return (0, 0)
         except KeyError:
             return (0, 0)
         position = x * 16 * 16 + z * 16 + subchunk_y
@@ -472,6 +524,9 @@ class Entry:
         else:
             block_data = block_raw_data >> 4
         return (block_id, block_data)
+
+    def delete_cache(self) -> None:
+        self.data_chunk.__data_cache = None
 
     @property
     def subchunk_count(self) -> int:

@@ -60,9 +60,9 @@ logger = logging.getLogger(__name__)
 @click.option(
     "-w",
     "--world-out",
-    type=click.Path(file_okay=False, path_type=Path),
+    type=str,
     help="Path to the Java world",
-    default=Path.cwd() / "Converted",
+    default="",
 )
 @click.option(
     "--delete-out",
@@ -74,13 +74,19 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help="The converted world won't generate new chunks",
 )
+@click.option(
+    "--enable-developer",
+    is_flag=True,
+    help="Enable developer mode, which will allow developer features and debugging information to be shown",
+)
 def main(
     path: Path,
     out: Path,
     mode: str,
-    world_out: Path,
+    world_out: str,
     delete_out: bool = False,
-    world_void: str = False,
+    world_void: bool = False,
+    enable_developer: bool = False,
 ) -> None:
     start_time = time.time()
     with importlib.resources.path(data, "blankworld") as blank_world_path:
@@ -93,7 +99,7 @@ def main(
     logger.info(f"World name: {world.name}")
     if mode == "convert":
         convert(world, blank_world, world_out, 
-                delete_out=delete_out, world_void=world_void)
+                delete_out=delete_out, world_void=world_void, developer=enable_developer)
         total_time = time.time() - start_time
         minutes = int(total_time // 60)
         seconds = total_time % 60

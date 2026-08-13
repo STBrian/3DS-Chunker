@@ -93,3 +93,12 @@ struct BlockData {
     uint16 unknown0[16][16];
     uint8 biomes[16][16];
 };
+
+struct LegacyChunkData {
+    uint8 blocks[16][16][16*8];
+    uint8 blockData[16 * 16 * 16 * 8 / 2];
+    uint8 skyLight[16 * 16 * 16 * 8 / 2];
+    uint8 blockLight[16 * 16 * 16 * 8 / 2];
+    uint8 heightmap[16 * 16];
+    uint32 biomes[16][16];
+}

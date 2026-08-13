@@ -66,7 +66,7 @@ class EmptyChunk(anvil.EmptyChunk):
 
     def save(self):
         root = super().save()
-        level = root.tags[-1]
+        level: nbt.TAG_Compound = root.tags[-1]
         if self.biomesData != None:
             biomes = nbt.TAG_Int_Array(name="Biomes")
             biomes.value = self.biomesData
